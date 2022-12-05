@@ -10,4 +10,4 @@ Copy `lua/iperf3.lua` to `<HOME>\AppData\Roaming\Wireshark\plugins\` .
 
 # Screenshots
 
-See [screenshots/](screenshots/).
+See [screenshots/](screenshots/) .
