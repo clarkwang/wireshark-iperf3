@@ -9,13 +9,14 @@ local g = {
     PORT = 5201,
 
     udp = {
-        packets = 0,
-        last_seq32 = 0,  -- yes the initial value should be 0
+      --packets = 0,
+      --visited = 0,
+      --streams = {},
     },
 
     tcp = {
-        packets = 0,
-        visited = 0,
+      --packets = 0,
+      --visited = 0,
     },
 
     debug = {
@@ -99,6 +100,7 @@ do
         'ip.src_host', 'ip.dst_host',
         'tcp.seq', 'tcp.seq_raw',
         'tcp.ack', 'tcp.ack_raw',
+        'udp.stream',
     }
 
     for _, f in ipairs(fields) do
@@ -258,11 +260,12 @@ tcproto.fields = g.fields
 function tcproto.dissector(tvbuf, pinfo, tree)
     pinfo.cols.protocol = tcproto.name
 
-    debug('%s', pfield('ip.src_host') )
+  --debug('%s', pfield('ip.src_host') )
 
     g.tcp.packets = g.tcp.packets + 1
     if not pinfo.visited then
         g.tcp.visited = g.tcp.visited + 1
+      --debug('#tcp = %d', g.tcp.visited)
     end
 
     local desc = string.format("iperf3tcp - github.com/clarkwang")
@@ -275,16 +278,64 @@ function tcproto.dissector(tvbuf, pinfo, tree)
     end
 end
 
+function tcproto.init()
+    g.tcp = {
+        packets = 0,
+        visited = 0,
+    }
+end
+
 ----------------------------------------------------------------------
 
 local udproto = Proto("iperf3u", "iperf3-udp")
 udproto.fields = g.ufields
 
+local function udp_seqlen(tvbuf, pinfo)
+    local num = pfield('udp.stream').value
+    if not g.udp.streams[num] then
+        g.udp.streams[num] = { seqs = {}, seqlen = nil, }
+    end
+
+    local stream = g.udp.streams[num]
+    if stream.seqlen then
+        return stream.seqlen
+    end
+
+    if pinfo.visited then
+        return -1
+    end
+
+    if #stream.seqs < 3 then
+        local seq32 = tvbuf(8, 4):uint()
+        table.insert(stream.seqs, seq32)
+    end
+
+    if #stream.seqs == 2 then
+        -- packets #1 and #2 have the same seq32 num
+        if stream.seqs[1] == stream.seqs[2] then
+            stream.seqlen = 8
+            return stream.seqlen
+        end
+    elseif #stream.seqs == 3 then
+        -- packets #2 and #3 have the same seq32 num
+        if stream.seqs[2] == stream.seqs[3] then
+            stream.seqlen = 8
+        else
+            -- packets #1, #2 and #3 all have different seq32 num
+            stream.seqlen = 4
+        end
+        return stream.seqlen
+    end
+
+    -- the seq len cannot be determined yet.
+    return -1
+end
+
 function udproto.dissector(tvbuf, pinfo, tree)
     pinfo.cols.protocol = udproto.name
 
     g.udp.packets = g.udp.packets + 1
-    debug('#udp = %d', g.udp.packets)
+  --debug('#udp = %d', g.udp.packets)
 
     local desc = string.format("iperf3udp - github.com/clarkwang")
     local subtree = tree:add(udproto, tvbuf(), desc)
@@ -325,23 +376,29 @@ function udproto.dissector(tvbuf, pinfo, tree)
         timetree:add(g.ufields.time_usec, tvbuf(4, 4) )
     end
 
-    local seq_len
-    local seq32 = tvbuf(8, 4):uint()
-    if seq32 == g.udp.last_seq32 then
+    local seqlen = udp_seqlen(tvbuf, pinfo)
+    if seqlen == 4 then
+        -- 32bit counter
+        subtree:add(g.ufields.seq32, tvbuf(8, 4) )
+    elseif seqlen == 8 then
         -- 64bit counter
-        seq_len = 8
         subtree:add(g.ufields.seq64, tvbuf(8, 8) )
     else
-        -- 32bit counter
-        seq_len = 4
-        subtree:add(g.ufields.seq32, tvbuf(8, 4) )
+        return
     end
-    g.udp.last_seq32 = seq32
 
-    local hdrlen = 8 + seq_len
+    local hdrlen = 8 + seqlen
     local desc = string.format('Data (%d bytes)', length - hdrlen)
     local databuf = tvbuf(hdrlen)
     subtree:add(g.ufields.data, databuf, databuf:raw(), desc)
+end
+
+function udproto.init()
+    g.udp = {
+        packets = 0,
+        visited = 0,
+        streams = {},
+    }
 end
 
 ----------------------------------------------------------------------
